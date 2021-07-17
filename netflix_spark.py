@@ -3,8 +3,8 @@ import pandas as pd
 import numpy as np
 import os
 # Path for spark source folder
-os.environ['SPARK_HOME']="/usr/local/spark-3.1.1-bin-hadoop3.2"
-# os.environ['SPARK_LOCAL_IP']="spark://kelvinhwee-VirtualBox:7077"
+os.environ['SPARK_HOME']="/opt/spark"
+os.environ['SPARK_LOCAL_IP']="spark://kelvinhwee-VirtualBox:7077"
 
 netflix_path = r'/media/sf_Z._Shared_folder_for_Ubuntu'
 os.chdir(netflix_path)
@@ -43,11 +43,10 @@ except: pass
 
 #=== create the Spark config, Spark session, sparkContext, and sqlContext
 #- Spark Config
-# master = "local[1]"
 master = "spark://kelvinhwee-VirtualBox:7077"
-config = SparkConf().setAll([('spark.executor.memory', '2g'),
-                             ('spark.executor.cores', '2'),
-                             ('spark.cores.max', '3'),
+config = SparkConf().setAll([('spark.executor.memory', '1g'), # controls "memory per executor" shown in SparkUI; we configured "1g" per worker
+                             ('spark.executor.cores', '1'), # affects "Cores" in SparkUI; we configured 1 core for the worker
+                             ('spark.cores.max', '2'),
                              ('spark.driver.memory', '2g')]) \
                     .setMaster(master) \
                     .set("spark.driver.port", "10027") \
@@ -72,7 +71,6 @@ sqlContext = SQLContext(spark.sparkContext)
 #=== create RDD from the lines read into the text file
 
 #--- read in the text file as an RDD
-# rdd = sc.textFile('archive\\testfile.txt')
 rdd = sc.textFile('data.txt')  #rdd = sc.textFile('data.txt', 2000)
 rdd.take(5)
 
