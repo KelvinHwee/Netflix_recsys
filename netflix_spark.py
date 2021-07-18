@@ -125,8 +125,42 @@ IMDB_spark_df = spark.read.option("header", False) \
 #=== join the movie ratings dataframe with the movie titles dataframe
 joined_df = netflix_spark_df2.join(movie_titles_spark_df, ["Movie_ID"]) # putting the join condition in list drops duplicates
 joined_df2 = joined_df.join(IMDB_spark_df, movie_titles_spark_df["Movie_title"] == IMDB_spark_df["Title"])
-joined_df3 = joined_df2.select(["Movie_ID","Movie_title","Movie_year","Customer_ID","Ratings","Date_of_review","Genre","Duration"])
+joined_df3 = joined_df2.select(["Movie_ID","Movie_title","Movie_year",
+                                "Customer_ID","Ratings","Date_of_review",
+                                "Genre","Duration"])
 
-joined_df3.take(10)
+#=== convert Spark dataframe to RDD
+joined_rdd = joined_df3.rdd.map(list)
 
-test_pd_df = joined_df3.limit(100).toPandas()
+#=== create the rows for the matrix setup (to determine user similarity)
+#--- get a list of movie IDs
+distinct_movie_id_rdd = joined_df3.select("Movie_ID").distinct().rdd
+distinct_movie_id_list = distinct_movie_id_rdd.map(lambda r : r[0]).collect()
+distinct_movie_id_list2 = sorted(distinct_movie_id_list)
+len_movie_id = len(distinct_movie_id_list2)
+
+
+#--- get a list of customer IDs
+distinct_cust_id_rdd = joined_df3.select("Customer_ID").distinct().rdd
+distinct_cust_id_list = distinct_cust_id_rdd.map(lambda r : r[0]).collect()
+distinct_cust_id_list2 = sorted(distinct_cust_id_list)
+len_cust_id = len(distinct_cust_id_list2)
+
+
+### TESTING AREA
+
+
+
+
+par_x = sc.parallelize([1,2,3,4,5])
+type(par_x)
+par_x.collect()
+
+
+df = spark.createDataFrame(
+    sc.parallelize([["id" + str(n)] + np.random.randint(0, 2, 10).tolist() for n in range(20)]),
+    ["id"] + ["movie" + str(i) for i in range(10)])
+df.show()
+
+
+### TESTING AREA
