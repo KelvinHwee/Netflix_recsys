@@ -2,6 +2,8 @@
 import pandas as pd
 import numpy as np
 import os
+from itertools import chain
+
 # Path for spark source folder
 os.environ['SPARK_HOME']="/opt/spark"
 os.environ['SPARK_LOCAL_IP']="spark://kelvinhwee-VirtualBox:7077"
@@ -20,7 +22,7 @@ from pyspark.sql import SparkSession, SQLContext, Row, DataFrame
 from pyspark.sql.types import *
 import pyspark.sql.functions as F
 from pyspark.sql.functions import udf, col, lit, when
-from pyspark.sql.functions import isnan, when, count, col, array
+from pyspark.sql.functions import isnan, when, count, col, array, create_map
 from pyspark.sql.functions import date_format, to_date
 from pyspark.sql.functions import array_contains, array_sort
 
@@ -123,28 +125,59 @@ IMDB_spark_df = spark.read.option("header", False) \
 
 
 #=== join the movie ratings dataframe with the movie titles dataframe
-joined_df = netflix_spark_df2.join(movie_titles_spark_df, ["Movie_ID"]) # putting the join condition in list drops duplicates
+joined_df = netflix_spark_df2.join(movie_titles_spark_df, ["Movie_ID"]) # put "join" condition in list drops duplicates
 joined_df2 = joined_df.join(IMDB_spark_df, movie_titles_spark_df["Movie_title"] == IMDB_spark_df["Title"])
 joined_df3 = joined_df2.select(["Movie_ID","Movie_title","Movie_year",
                                 "Customer_ID","Ratings","Date_of_review",
                                 "Genre","Duration"])
 
+
 #=== convert Spark dataframe to RDD
 joined_rdd = joined_df3.rdd.map(list)
+joined_rdd.take(5)
 
 #=== create the rows for the matrix setup (to determine user similarity)
 #--- get a list of movie IDs
 distinct_movie_id_rdd = joined_df3.select("Movie_ID").distinct().rdd
-distinct_movie_id_list = distinct_movie_id_rdd.map(lambda r : r[0]).collect()
+distinct_movie_id_list = distinct_movie_id_rdd.map(lambda r : "movie_" + str(r[0])).collect()
 distinct_movie_id_list2 = sorted(distinct_movie_id_list)
-len_movie_id = len(distinct_movie_id_list2)
+col_headers = ["cust_id"] + distinct_movie_id_list2 # this will be used as col headers for the ratings dataframe
 
-
-#--- get a list of customer IDs
+#--- get list of customer IDs
 distinct_cust_id_rdd = joined_df3.select("Customer_ID").distinct().rdd
 distinct_cust_id_list = distinct_cust_id_rdd.map(lambda r : r[0]).collect()
 distinct_cust_id_list2 = sorted(distinct_cust_id_list)
-len_cust_id = len(distinct_cust_id_list2)
+row_headers = ["cust_id_" + str(i) for i in distinct_cust_id_list2]
+
+
+#--- create a dictionary that computes an index number for the "Customer_ID" (for matrix computation later)
+cust_id_dict = dict((cust, idx) for idx, cust in enumerate(distinct_cust_id_list2))
+
+#--- create a UDF that applies the created dictionary, and does mapping
+def mapping_expr(dict_object):
+    def mapping_expr_(value):
+        return dict_object.get(value)
+    return udf(mapping_expr_, IntegerType())
+
+#--- insert a new column for the customer ID index
+joined_df4 = joined_df3.withColumn("CustID_idx", mapping_expr(cust_id_dict)(col("Customer_ID")))
+
+
+#--- we check out a sub-portion of the dataframe
+joined_df4.createOrReplaceTempView("movie_table") # create a view in order for Spark SQL to work
+ratings_df = spark.sql(
+                        """
+                        SELECT * FROM movie_table                        
+                        WHERE year(Date_of_review) >= 2000  -- there are 37,364,386 entries
+                        ORDER BY Date_of_review DESC  
+                        """
+                    )
+
+
+#--- get lists of ratings
+
+
+#-
 
 
 ### TESTING AREA
@@ -155,7 +188,6 @@ len_cust_id = len(distinct_cust_id_list2)
 par_x = sc.parallelize([1,2,3,4,5])
 type(par_x)
 par_x.collect()
-
 
 df = spark.createDataFrame(
     sc.parallelize([["id" + str(n)] + np.random.randint(0, 2, 10).tolist() for n in range(20)]),
