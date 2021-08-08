@@ -2,7 +2,6 @@
 import pandas as pd
 import numpy as np
 import os
-from itertools import chain
 
 # Path for spark source folder
 os.environ['SPARK_HOME']="/opt/spark"
@@ -23,6 +22,7 @@ from pyspark.sql.types import *
 import pyspark.sql.functions as F
 from pyspark.sql.functions import udf, col, lit, when
 from pyspark.sql.functions import isnan, when, count, col, array, create_map
+from pyspark.sql.functions import max, min
 from pyspark.sql.functions import date_format, to_date
 from pyspark.sql.functions import array_contains, array_sort
 
@@ -132,67 +132,127 @@ joined_df3 = joined_df2.select(["Movie_ID","Movie_title","Movie_year",
                                 "Genre","Duration"])
 
 
-#=== convert Spark dataframe to RDD
-joined_rdd = joined_df3.rdd.map(list)
-joined_rdd.take(5)
-
 #=== create the rows for the matrix setup (to determine user similarity)
-#--- get a list of movie IDs
-distinct_movie_id_rdd = joined_df3.select("Movie_ID").distinct().rdd
-distinct_movie_id_list = distinct_movie_id_rdd.map(lambda r : "movie_" + str(r[0])).collect()
-distinct_movie_id_list2 = sorted(distinct_movie_id_list)
-col_headers = ["cust_id"] + distinct_movie_id_list2 # this will be used as col headers for the ratings dataframe
 
-#--- get list of customer IDs
-distinct_cust_id_rdd = joined_df3.select("Customer_ID").distinct().rdd
-distinct_cust_id_list = distinct_cust_id_rdd.map(lambda r : r[0]).collect()
-distinct_cust_id_list2 = sorted(distinct_cust_id_list)
-row_headers = ["cust_id_" + str(i) for i in distinct_cust_id_list2]
+#--- we check out a sub-portion of the dataframe
+joined_df3.createOrReplaceTempView("movie_table") # create a view in order for Spark SQL to work
+ratings_df = spark.sql(
+                        """
+                        SELECT Movie_ID, Customer_ID, Ratings FROM movie_table
+                        WHERE year(Date_of_review) >= 2001  --total 37,021,254 entries; ratings_df.select("Ratings").count()
+                        ORDER BY Date_of_review DESC  
+                        """
+                    )
+
+ratings_df.show(20)
 
 
 #--- create a dictionary that computes an index number for the "Customer_ID" (for matrix computation later)
-cust_id_dict = dict((cust, idx) for idx, cust in enumerate(distinct_cust_id_list2))
 
-#--- create a UDF that applies the created dictionary, and does mapping
+#- create a UDF that applies the created dictionary, and then do the mapping
 def mapping_expr(dict_object):
     def mapping_expr_(value):
         return dict_object.get(value)
     return udf(mapping_expr_, IntegerType())
 
-#--- insert a new column for the customer ID index
-joined_df4 = joined_df3.withColumn("CustID_idx", mapping_expr(cust_id_dict)(col("Customer_ID")))
+#- get a list of movie IDs
+distinct_movie_id_rdd = joined_df3.select("Movie_ID").distinct().rdd
+distinct_movie_id_list = distinct_movie_id_rdd.map(lambda r: r[0]).collect()
+distinct_movie_id_list2 = sorted(distinct_movie_id_list)
+
+#- get list of customer IDs
+distinct_cust_id_rdd = ratings_df.select("Customer_ID").distinct().rdd
+distinct_cust_id_list = distinct_cust_id_rdd.map(lambda r: r[0]).collect()
+distinct_cust_id_list2 = sorted(distinct_cust_id_list)
+
+#- create the dictionaries
+cust_id_dict = dict((cust, idx) for idx, cust in enumerate(distinct_cust_id_list2))
+movie_id_dict = dict((mov, idx) for idx, mov in enumerate(distinct_movie_id_list2))
+
+#- insert a new column for the customer ID index
+# max value of movie idx 3745
+# max value of cust idx  475502
+ratings_df2 = ratings_df.withColumn("CustID_idx", mapping_expr(cust_id_dict)(col("Customer_ID"))) \
+                        .withColumn("MovieID_idx", mapping_expr(movie_id_dict)(col("Movie_ID")))
+
+ratings_df2.show(10)
+ratings_df2.printSchema()
 
 
-#--- we check out a sub-portion of the dataframe
-joined_df4.createOrReplaceTempView("movie_table") # create a view in order for Spark SQL to work
-ratings_df = spark.sql(
-                        """
-                        SELECT * FROM movie_table                        
-                        WHERE year(Date_of_review) >= 2000  -- there are 37,364,386 entries
-                        ORDER BY Date_of_review DESC  
-                        """
-                    )
+### TESTING AREA
+ratings_subset_df = ratings_df2.filter(ratings_df2.CustID_idx > 475000) \
+                               .filter(ratings_df2.MovieID_idx > 3100)
+
+ratings_subset_df.show()
+ratings_subset_df.count()
 
 
-#--- get lists of ratings
+#--- get matrix of ratings against customers
+# rating = ratings_subset_df.where((col("CustID_idx") == 3235) & (col("MovieID_idx") == 475458)).select("Ratings")
+rating = ratings_subset_df.where(col("CustID_idx") > 3234).select("Ratings")
+rating = ratings_subset_df.where(col("CustID_idx") == 3562)
+rating = ratings_subset_df.filter(ratings_subset_df.MovieID_idx == '3562')
+# rating.show()
+
+
+master_ratings_list = []
+for cust_num in ratings_subset_df.select("CustID_idx"):
+    for movie_num in ratings_subset_df.select("MovieID_idx"):
+
+        ratings_list = []
+        rating = ratings_subset_df.filter((col("CustID_idx") == cust_num) & (col("MovieID_idx") == movie_num)).select("Ratings")
+
+        if rating.count() > 0:
+            ratings_list.append(rating)
+        elif rating.count() == 0:
+            ratings_list.append(0)
+
+    master_ratings_list.append(ratings_list)
+
+type(master_ratings_list)
+master_ratings_list.show()
+
+
+# movies_list = []
+# ratings_list = []
+# for cust_num in range(ratings_df.select("CustID_idx").count()):
+#     sub_movie_index_list = ratings_df2.filter("CustID_idx == " + str(cust_num)).select("MovieID_idx").collect()
+#     sub_ratings_list = ratings_df2.filter("CustID_idx == " + str(cust_num)).select("Ratings").collect()
+#
+#     movies_list.append(sub_movie_index_list)
+#     ratings_list.append(sub_ratings_list)
+
+    # sub_movie_index_list = ratings_df2.filter("CustID_idx == " + str(i)).select("MovieID_idx").collect()
+
 
 
 #-
 
 
+#=== create the customer/movie/ratings matrix
+
+# col_headers = ["cust_id"] + distinct_movie_id_list2 # this will be used as col headers for the ratings dataframe
+# row_headers = ["cust_id_" + str(i) for i in distinct_cust_id_list2]
+
+
+
+
+
+
+
+#
+# par_x = sc.parallelize([1,2,3,4,5])
+# type(par_x)
+# par_x.collect()
+#
+# df = spark.createDataFrame(
+#     sc.parallelize([["id" + str(n)] + np.random.randint(0, 2, 10).tolist() for n in range(20)]),
+#     ["id"] + ["movie" + str(i) for i in range(10)])
+# df.show()
+
+
 ### TESTING AREA
 
 
-
-
-par_x = sc.parallelize([1,2,3,4,5])
-type(par_x)
-par_x.collect()
-
-df = spark.createDataFrame(
-    sc.parallelize([["id" + str(n)] + np.random.randint(0, 2, 10).tolist() for n in range(20)]),
-    ["id"] + ["movie" + str(i) for i in range(10)])
-df.show()
-
-
-### TESTING AREA
+#=== perform recommendation by determining similar users
+#=== this approach however, suffers from the "cold start problem"
